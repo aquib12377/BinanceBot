@@ -21,20 +21,10 @@ namespace Binance_Trader
 {
     public class Binance
     {
-        private static readonly double UpperT = 70;
-        private static readonly double LowerT = -70;
-        private static readonly double ZeroLine = 0;
         #region Signal variables
-        private static readonly string _signalFile = "BUY_SELL.txt";
-        private static string _previousSignal = "";
+        private static readonly string _signalFile = "PlacedOrder.txt";
         #endregion
         #region Indicators variables
-        //CCI 
-        private List<CciResult> Cci;
-        //RSI
-        private List<RsiResult> Rsi;
-        //MA
-        private List<EmaResult> Ema;
         private List<ParabolicSarResult> ParabolicSarResults;
         #endregion
         #region My Variables
@@ -47,29 +37,24 @@ namespace Binance_Trader
         private DateTime TodaysDate = DateTime.Now;
         private DateTime StartTime = DateTime.Now;
         private DateTime KlineTime = DateTime.Now;
-
         private List<IBinanceKline> Klines;
-        
-        public bool DebugMode = false;
         private string _coin = string.Empty;
         private BinanceClient Client;
         private Logger Logger;
+        private decimal Leverage;
+        private decimal UseBalancePercentage;
         #endregion
-        public async Task Initialize(string coinName, int precision = 3, bool isDebugMode = true)   
+        public async Task Initialize(string coinName, int precision = 3, decimal leverage = 10.0m,
+                                     decimal useBalancePercentage = 50.0m)
         {
             Logger = new Logger();
             try
             {
                 #region Initializing Binance Clients for API interaction
-                //BinanceSocket = new BinanceSocketClient(new BinanceSocketClientOptions()
-                //{
-                //    ApiCredentials = new ApiCredentials("caJ02pCPrdQTrStLR9YnpVwNGgxEU6JV0s8pHCnEeEHVhAOuk5PpfkDLFLYkEpsD"
-                //    , "Sttc66kCjvfHfSOcp98ON8DLoub4kgS9wcLJcUk49wfVfpDbipXAbY0W7Zx4iYzW")
-                //});
                 Client = new BinanceClient(new BinanceClientOptions()
                 {
-                    ApiCredentials = new ApiCredentials("1jyeTlSyHIjqnRpwIfipPZgqKS39BXuVzTRNdxojQ7t8zyAnYwRd5E8ksT2JlQcF"
-                        , "tr9t0BbbpF4AAURh58CC13IfDhoBGsjcjo9TBGiKhP5zxhBTMa2vZSf7o2XYyNfw")
+                    ApiCredentials = new ApiCredentials("your Binance Key"
+                        , "Your Binance secret")
                 });
                 #endregion
                 #region Validating API
@@ -86,6 +71,8 @@ namespace Binance_Trader
                 Precision = precision;
                 Klines = new List<IBinanceKline>();
                 Quotes = new List<Quote>();
+                Leverage = leverage;
+                UseBalancePercentage = useBalancePercentage;
                 StartTime = new DateTime(2020, 8, 22, 0, 0, 0);
                 var TempDate = DateTime.Now;
                 TodaysDate = new DateTime(TempDate.Year, TempDate.Month, TempDate.Day, TempDate.Hour, TempDate.Minute, 0);
@@ -99,27 +86,6 @@ namespace Binance_Trader
                 Logger.Log(error);
             }
 
-        }
-        public async Task BackTestStrategies()
-        {
-            var f = await File.ReadAllLinesAsync(@"C:\Users\Mohammed Aquib Ansar\source\repos\Binance_HistoricalDataSaver\bin\Debug\netcoreapp3.1\ICPUSDT.txt");
-            var file = f.Select(x => x.Split(",")).ToList();
-
-            for (int i = 1; i < file.Count - 1; i++)
-            {
-                Quotes.Add(new Quote
-                {
-                    Date = DateTime.Parse(file[i][0]),
-                    Open = Convert.ToDecimal(file[i][1]),
-                    High = Convert.ToDecimal(file[i][2]),
-                    Low = Convert.ToDecimal(file[i][3]),
-                    Close = Convert.ToDecimal(file[i][4]),
-                    Volume = Convert.ToDecimal(file[i][5])
-                });
-            }
-
-            CalculateIndicators();
-            TestSignal();
         }
         private void UpdateQuote(IEnumerable<IBinanceKline> klines)
         {
@@ -146,7 +112,7 @@ namespace Binance_Trader
             }
 
         }
-        public async Task PlaceOrder(bool _long, string coin, decimal percentage = 0.0m)
+        public async Task PlaceOrder(bool _long, string coin)
         {
             #region fetching balance and coin price
             var usdtb = await Client.UsdFuturesApi.Account.GetBalancesAsync();
@@ -155,9 +121,9 @@ namespace Binance_Trader
             var coinPrice = cp.Data.MarkPrice;
             #endregion
             #region Calculating position size based on 15x Leverage
-            var positionSize = usdtBalance * 19;
+            var positionSize = usdtBalance * UseBalancePercentage * Leverage;
             #endregion
-            #region Placing  order with TP 5% and SL 5%
+            #region Placing  order with TP 0.4% and SL 0.2% of price change profit will depend on the leverage you use.
 
             var op = await Client.UsdFuturesApi.Trading.GetOpenOrdersAsync(coin);
 
@@ -179,7 +145,7 @@ namespace Binance_Trader
                     var quantity = Math.Round(positionSize / coinPrice, Precision);
                     var stopLossPrice = Math.Round(lastCandleLow, Precision);
                     if (stopLossPrice == coinPrice)
-                        stopLossPrice = Math.Round(coinPrice - ((0.5m / 100) * coinPrice),Precision);
+                        stopLossPrice = Math.Round(coinPrice - ((0.2m / 100) * coinPrice),Precision);
                     var takeProfitPrice = Math.Round(((0.4m / 100) * coinPrice) + coinPrice, Precision);
                     var openPositionResult = await Client.UsdFuturesApi.Trading.PlaceOrderAsync(coin, OrderSide.Buy, FuturesOrderType.Market, quantity);
                     //Console.WriteLine(openPositionResult.Error.Message ?? "");
@@ -237,7 +203,7 @@ namespace Binance_Trader
 
             #endregion
         }
-        public async Task CollectDataset()
+        public async Task Execute()
         {
             try
             {
@@ -326,19 +292,17 @@ namespace Binance_Trader
                 #region Placing order based on signal
                 if (_long && (prevLL == null || prevLL != true) && IsFirsTime == false)
                 {
-                    await PlaceOrder(true, _coin, 80m);
+                    await PlaceOrder(true, _coin);
                     prevLL = true;
                     prevSS = false;
-                    //Logger.LogSignal(true, false, quote.Close, $"Buy - Long {quote.Date}");
                     File.AppendAllText(_signalFile, string.Format("{0},{1},{2},{3}\r\n",
                                                     quote.Date, quote.Low, quote.High, "LONG"));
                 }
                 else if (_short && (prevSS == null || prevSS != true) && IsFirsTime == false)
                 {
-                    await PlaceOrder(false, _coin, 80m);
+                    await PlaceOrder(false, _coin);
                     prevSS = true;
                     prevLL = false;
-                    //Logger.LogSignal(true, false, quote.Close, $"Buy - SHORT {quote.Date}");
                     File.AppendAllText(_signalFile, string.Format("{0},{1},{2},{3}\r\n",
                                                     quote.Date, quote.Low, quote.High, "SHORT"));
                 }
@@ -353,58 +317,6 @@ namespace Binance_Trader
             {
                 Logger.LogError(_);
             }
-        }
-      
-        private void TestSignal()
-        {
-            #region Trend Filter
-            StringBuilder builder = new StringBuilder();
-            builder.Append("Date,ClosePrice,OpenPrice,Signal\r\n");
-            bool? prevLLT = null;
-            bool? prevSST = null;
-            for (int i = 2; i < Quotes.Count - 1; i++)
-            {
-                if (Cci[i].Cci.Value == 0)
-                    continue;
-
-                var _longT = false;
-                var _shortT = false;
-                var quoteT = Quotes[i];
-
-
-                string line;
-                if (_longT && _shortT)
-                {
-                    line = string.Format("{0},{1},{2},{3}\r\n",
-                        quoteT.Date, quoteT.Low, quoteT.High, "INVALID TRADE");
-                    builder.Append(line);
-                }
-                else if (_longT && (prevLLT == null || prevLLT != true))
-                {
-                    prevLLT = true;
-                    prevSST = false;
-                    line = string.Format("{0},{1},{2},{3}\r\n",
-                        quoteT.Date, quoteT.Low, quoteT.High, "LONG");
-                    builder.Append(line);
-                }
-                else if (_shortT && (prevSST == null || prevSST != true))
-                {
-                    prevSST = true;
-                    prevLLT = false;
-                    line = string.Format("{0},{1},{2},{3}\r\n",
-                        quoteT.Date, quoteT.Low, quoteT.High, "SHORT");
-                    builder.Append(line);
-                }
-                else
-                {
-                    line = string.Format("{0},{1},{2},{3}\r\n",
-                        quoteT.Date, quoteT.Low, quoteT.High, "NO BUY");
-                    builder.Append(line);
-                }
-            }
-            File.Delete(@"../../../Trend_Filter1.csv");
-            File.AppendAllLines(@"../../../Trend_Filter1.csv", builder.ToString().Split("\r\n").Reverse());
-            #endregion
         }
         private void CalculateIndicators()
         {
@@ -421,9 +333,9 @@ namespace Binance_Trader
                
                 Logger.Log("Successfully calculated indicators");
             }
-            catch (Exception _)
+            catch (Exception e)
             {
-                Logger.LogError(_);
+                Logger.LogError(e);
             }
         }
     }
